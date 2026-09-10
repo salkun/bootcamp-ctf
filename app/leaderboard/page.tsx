@@ -21,13 +21,19 @@ export default function LeaderboardPage() {
         .order("score", { ascending: false })
         .order("completed_tasks", { ascending: false });
 
-      if (data) setLeaderboard(data);
+      if (error) {
+        console.error("Gagal memuat leaderboard:", error);
+      }
+
+      if (data) {
+        // Konversi data ke unknown terlebih dahulu untuk membungkam konflik tipe dari Supabase, 
+        // lalu ubah secara paksa ke tipe LeaderboardEntry[] agar ESLint senang.
+        setLeaderboard(data as unknown as LeaderboardEntry[]);
+      }
     };
 
-    // Ambil data pertama kali
     fetchLeaderboard();
 
-    // Auto-refresh setiap 5 detik untuk layar proyektor
     const interval = setInterval(fetchLeaderboard, 5000);
     return () => clearInterval(interval);
   }, []);
