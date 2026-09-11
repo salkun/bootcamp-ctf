@@ -15,7 +15,16 @@ interface Group {
   name: string;
   pin: string;
   score: number;
+  game_id?: string;
   games?: { name: string } | null;
+}
+
+interface Task {
+  id?: string;
+  game_id: string;
+  task_number: number;
+  title: string;
+  requirements: string[] | string;
 }
 
 interface Submission {
@@ -27,7 +36,7 @@ interface Submission {
   validation_status: string;
   feedback?: string;
   submitted_at?: string;
-  groups?: { name: string } | null;
+  groups?: { name: string; game_id?: string } | null;
 }
 
 type FilterStatus = "all" | "pending" | "approved" | "rejected";
@@ -60,6 +69,11 @@ export default function AdminDashboard() {
   const [newGameBasePoin, setNewGameBasePoin] = useState(20);
   const [loadingGame, setLoadingGame] = useState(false);
 
+  // State Tasks / Hint
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [loadingTask, setLoadingTask] = useState(false);
+
   // State Validasi
   const [filterStatus, setFilterStatus] = useState<FilterStatus>("all");
   const [selectedSubmission, setSelectedSubmission] = useState<Submission | null>(null);
@@ -67,11 +81,71 @@ export default function AdminDashboard() {
   const [showModal, setShowModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
+  // Helper parser requirements / hint
+  const parseRequirements = (reqs: unknown): string[] => {
+    if (!reqs) return [];
+    if (Array.isArray(reqs)) return reqs.map((r) => String(r));
+    if (typeof reqs === "string") {
+      try {
+        const parsed = JSON.parse(reqs);
+        if (Array.isArray(parsed)) return parsed.map((r) => String(r));
+        return [parsed];
+      } catch {
+        return [reqs];
+      }
+    }
+    return [String(reqs)];
+  };
+
   // Skor per misi
   const getScoreForTask = (taskNum: number) => {
     if (taskNum === 1) return 10;
     if (taskNum === 9) return 50;
     return 20;
+  };
+
+  // Dapatkan info task (judul & requirements / hint)
+  const getTaskInfo = (
+    gameId?: string,
+    taskNumber?: number
+  ): { title: string; requirements: string[] } => {
+    if (!taskNumber) return { title: "Misi", requirements: [] };
+
+    const found =
+      tasks.find(
+        (t) => (t.game_id === gameId || !gameId) && t.task_number === taskNumber
+      ) || tasks.find((t) => t.task_number === taskNumber);
+
+    if (found) {
+      return {
+        title: found.title,
+        requirements: parseRequirements(found.requirements),
+      };
+    }
+
+    if (taskNumber === 1) {
+      return {
+        title: "Registrasi Pasukan",
+        requirements: [
+          "Masukkan nama lengkap semua anggota tim",
+          "Tentukan peran masing-masing (contoh: Hacker, Hustler, Hipster)",
+        ],
+      };
+    }
+    if (taskNumber === 9) {
+      return {
+        title: "Misi Terakhir: Laporan Tempur",
+        requirements: [
+          "Masukkan link presentasi proyek (PPT/Canva)",
+          "Masukkan link video demonstrasi hasil game kalian",
+        ],
+      };
+    }
+
+    return {
+      title: `Misi ${taskNumber}`,
+      requirements: ["Petunjuk dan kriteria pengerjaan sesuai instruksi di arena."],
+    };
   };
 
   const refreshGroupsData = async () => {
@@ -90,10 +164,21 @@ export default function AdminDashboard() {
     if (gamesData) setGames(gamesData as Game[]);
   };
 
+  const refreshTasksData = async () => {
+    const { data: tasksData, error } = await supabase
+      .from("tasks")
+      .select("*")
+      .order("task_number", { ascending: true });
+    if (error) {
+      console.error("Error fetching tasks:", error);
+    }
+    if (tasksData) setTasks(tasksData as Task[]);
+  };
+
   const refreshSubmissions = async () => {
     const { data, error } = await supabase
       .from("submissions")
-      .select("*, groups(name)")
+      .select("*, groups(name, game_id)")
       .order("submitted_at", { ascending: false });
     if (error) {
       console.error("Error fetching submissions:", error);
@@ -113,6 +198,7 @@ export default function AdminDashboard() {
     const loadInitialData = async () => {
       await refreshGamesData();
       await refreshGroupsData();
+      await refreshTasksData();
       await refreshSubmissions();
     };
     loadInitialData();
@@ -255,6 +341,7 @@ export default function AdminDashboard() {
     setNewGameDifficulty("easy");
     setNewGameBasePoin(20);
     await refreshGamesData();
+    await refreshTasksData();
     setLoadingGame(false);
   };
 
@@ -274,10 +361,52 @@ export default function AdminDashboard() {
   };
 
   // === HANDLER VALIDASI SUBMISSION ===
-  const openSubmissionModal = (sub: Submission) => {
+  const openSubmissionModal = async (sub: Submission) => {
     setSelectedSubmission(sub);
     setRejectFeedback("");
     setShowModal(true);
+    setLoadingTask(true);
+    setSelectedTask(null);
+
+    const gameId =
+      sub.game_id ||
+      sub.groups?.game_id ||
+      groups.find((g) => g.id === sub.group_id)?.game_id;
+
+    let task = tasks.find(
+      (t) => (t.game_id === gameId || !gameId) && t.task_number === sub.task_number
+    );
+
+    if (!task && gameId) {
+      const { data } = await supabase
+        .from("tasks")
+        .select("*")
+        .eq("game_id", gameId)
+        .eq("task_number", sub.task_number)
+        .maybeSingle();
+
+      if (data) {
+        task = data as Task;
+      }
+    }
+
+    if (!task) {
+      const anyTask = tasks.find((t) => t.task_number === sub.task_number);
+      if (anyTask) {
+        task = anyTask;
+      } else {
+        const info = getTaskInfo(gameId, sub.task_number);
+        task = {
+          game_id: gameId || "",
+          task_number: sub.task_number,
+          title: info.title,
+          requirements: info.requirements,
+        };
+      }
+    }
+
+    setSelectedTask(task);
+    setLoadingTask(false);
   };
 
   const handleApprove = async () => {
@@ -812,10 +941,22 @@ export default function AdminDashboard() {
                     <td className="p-3 border-2 border-black">
                       {sub.groups?.name || "—"}
                     </td>
-                    <td className="p-3 border-2 border-black text-center">
-                      <span className="bg-black text-white px-2 py-0.5 text-sm">
-                        Misi {sub.task_number}
-                      </span>
+                    <td className="p-3 border-2 border-black">
+                      <div className="flex flex-col gap-1">
+                        <span className="bg-black text-white px-2 py-0.5 text-xs font-mono font-bold w-fit">
+                          Misi {sub.task_number}
+                        </span>
+                        <span className="text-xs font-bold text-gray-800 line-clamp-1">
+                          {
+                            getTaskInfo(
+                              sub.game_id ||
+                                sub.groups?.game_id ||
+                                groups.find((g) => g.id === sub.group_id)?.game_id,
+                              sub.task_number
+                            ).title
+                          }
+                        </span>
+                      </div>
                     </td>
                     <td className="p-3 border-2 border-black text-center">
                       <span
@@ -860,7 +1001,7 @@ export default function AdminDashboard() {
       {/* MODAL REVIEW SUBMISSION */}
       {showModal && selectedSubmission && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-white border-8 border-black shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6">
+          <div className="bg-white border-8 border-black shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] max-w-4xl w-full max-h-[90vh] overflow-y-auto p-6">
             {/* Modal Header */}
             <div className="flex justify-between items-center mb-6 border-b-4 border-black pb-4">
               <div>
@@ -868,8 +1009,7 @@ export default function AdminDashboard() {
                   Review Submission
                 </h3>
                 <p className="font-bold text-gray-700">
-                  {selectedSubmission.groups?.name} — Misi{" "}
-                  {selectedSubmission.task_number}
+                  Tim: <span className="font-black text-black">{selectedSubmission.groups?.name || "—"}</span> &nbsp;|&nbsp; Misi {selectedSubmission.task_number}
                 </p>
               </div>
               <button
@@ -877,33 +1017,96 @@ export default function AdminDashboard() {
                   setShowModal(false);
                   setSelectedSubmission(null);
                 }}
-                className="bg-black text-white px-4 py-2 font-black text-xl hover:bg-red-500 border-2 border-black"
+                className="bg-black text-white px-4 py-2 font-black text-xl hover:bg-red-500 border-2 border-black cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
             {/* Status saat ini */}
-            <div className="mb-4">
+            <div className="mb-6 flex flex-wrap items-center gap-3">
               <span
-                className={`px-4 py-2 font-black uppercase text-sm border-2 border-black inline-block ${selectedSubmission.validation_status === "approved"
+                className={`px-4 py-1.5 font-black uppercase text-sm border-2 border-black inline-block ${
+                  selectedSubmission.validation_status === "approved"
                     ? "bg-brutal-green"
                     : selectedSubmission.validation_status === "pending"
                       ? "bg-yellow-200"
                       : "bg-red-200"
-                  }`}
+                }`}
               >
                 Status: {selectedSubmission.validation_status}
               </span>
-              <span className="ml-3 font-bold text-gray-600">
-                Skor jika approve: +
-                {getScoreForTask(selectedSubmission.task_number)} poin
+              <span className="font-black text-sm bg-brutal-yellow px-3 py-1.5 border-2 border-black">
+                Skor jika approve: +{getScoreForTask(selectedSubmission.task_number)} Poin
               </span>
             </div>
 
-            {/* Konten Submission */}
-            <div className="mb-6 border-4 border-black p-4 bg-brutal-bg">
-              {renderSubmissionContent(selectedSubmission)}
+            {/* 1. SECTION HINT & SYARAT MISI */}
+            <div className="mb-6 border-4 border-black bg-amber-50 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
+              <div className="bg-brutal-yellow border-b-4 border-black p-3 flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">💡</span>
+                  <span className="font-black text-lg uppercase tracking-wide">
+                    HINT / PETUNJUK & SYARAT MISI
+                  </span>
+                </div>
+                <span className="bg-black text-white px-2 py-0.5 text-xs font-mono font-black uppercase">
+                  Misi {selectedSubmission.task_number}
+                </span>
+              </div>
+              <div className="p-4 space-y-3">
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <span className="text-xs font-black uppercase text-gray-500">Judul Misi:</span>
+                  <h4 className="font-black text-lg uppercase text-black">
+                    {loadingTask ? (
+                      "Memuat judul misi..."
+                    ) : (
+                      selectedTask?.title || `Misi ${selectedSubmission.task_number}`
+                    )}
+                  </h4>
+                </div>
+
+                <div>
+                  <p className="text-xs font-black uppercase text-gray-600 mb-2">
+                    Syarat & Instruksi yang Diberikan ke Siswa (Hint):
+                  </p>
+                  {loadingTask ? (
+                    <div className="bg-white p-3 border-2 border-black font-bold text-gray-400 italic animate-pulse">
+                      Mengambil instruksi misi...
+                    </div>
+                  ) : (
+                    <ul className="list-disc list-inside space-y-1.5 bg-white p-3 border-2 border-black font-bold text-sm text-gray-900">
+                      {selectedTask && parseRequirements(selectedTask.requirements).length > 0 ? (
+                        parseRequirements(selectedTask.requirements).map((req, i) => (
+                          <li key={i} className="leading-relaxed">
+                            <span className="text-black">{req}</span>
+                          </li>
+                        ))
+                      ) : (
+                        <li className="text-gray-500 italic">Tidak ada petunjuk khusus untuk misi ini.</li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 2. SECTION JAWABAN SISWA */}
+            <div className="mb-6 border-4 border-black bg-white shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
+              <div className="bg-brutal-blue border-b-4 border-black p-3 flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">📥</span>
+                  <span className="font-black text-lg uppercase tracking-wide">
+                    JAWABAN / KODE DARI SISWA
+                  </span>
+                </div>
+                <span className="bg-black text-white px-2 py-0.5 text-xs font-mono font-bold">
+                  {selectedSubmission.groups?.name || "Siswa"}
+                </span>
+              </div>
+              <div className="p-4 bg-brutal-bg">
+                {renderSubmissionContent(selectedSubmission)}
+              </div>
             </div>
 
             {/* Feedback yang sudah ada */}
